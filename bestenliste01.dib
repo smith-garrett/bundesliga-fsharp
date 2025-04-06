@@ -1,0 +1,195 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"name":"csharp","languageName":"C#","aliases":["c#","cs"]},{"name":"fsharp","languageName":"fsharp"},{"name":"html","languageName":"HTML"},{"name":"http","languageName":"HTTP"},{"name":"javascript","languageName":"JavaScript","aliases":["js"]},{"name":"mermaid","languageName":"Mermaid"},{"name":"pwsh","languageName":"PowerShell","aliases":["powershell"]},{"name":"value"}]}}
+
+#!markdown
+
+# Scraping the website of the German weightlifting *Bundesliga* using F#
+
+The goal of this little notebook is to scrape a little weightlifting data from the German national league (*Bundesliga*)'s website. I'm just trying to get a feel for reading well-structured data from the web programmatically, formatting it for my needs, and making some plots to visualize the data.
+
+I'm starting with the *Bestenliste*, the list of athletes' best lifting total in the season, calculated according to the [German relative points system](https://de.wikipedia.org/wiki/Gewichtheben#Nach_Relativpunkten).
+
+[F# code](https://learn.microsoft.com/en-us/dotnet/fsharp/d) inspired by/modified from:
+- [Blog post](https://blizard.io/posts/web-scraping-with-fsharp)
+- [FSharp.Data documentation](https://fsprojects.github.io/FSharp.Data/library/HtmlParser.html)
+
+#!fsharp
+
+// Loading the necessary packages
+#r "nuget: FSharp.Data"
+open FSharp.Data
+
+#r "nuget: Plotly.NET"
+#r "nuget: Plotly.NET.Interactive"
+open Plotly.NET
+open Plotly.NET.Interactive
+
+#!markdown
+
+## Downloading the data
+For this exercise, I'll just download the [*Bestenliste*](https://german-weightlifting.de/bundesliga/contestants/best-list/2024-2025) for the 2024-2025 season.
+
+#!fsharp
+
+let website = HtmlDocument.Load("https://german-weightlifting.de/bundesliga/contestants/best-list/2024-2025")
+
+#!markdown
+
+To store the data, I'm creating a new record type, which I'll use to parse the table entries into a useable format.
+
+#!fsharp
+
+type Entry = {
+    Year: int
+    Rank: int
+    Name: string
+    Verein: string
+    MaximalePunktzahl: float
+}
+
+#!markdown
+
+To get the entries from the HTML table format into my useable type, we need a function that takes apart the HTML table row and creates a well-formed data entry.
+
+#!fsharp
+
+let parseRow (year: int) (row: HtmlNode): Entry =
+    // Extract the <td> elements
+    let tds = row.Descendants ["td"]
+    // Split up the row into its parts
+    let rank =
+        tds
+        |> Seq.item 0
+        |> fun x -> x.InnerText()
+        |> int
+
+    let name =
+        tds
+        |> Seq.item 1
+        |> fun x -> x.InnerText()
+    
+    let club = 
+        tds
+        |> Seq.item 2
+        |> fun x -> x.InnerText()
+    
+    let points =
+        tds
+        |> Seq.item 3
+        |> fun x -> x.InnerText()
+        |> float
+    
+    let entry = {
+        Year = year
+        Rank = rank
+        Name = name
+        Verein = club
+        MaximalePunktzahl = points
+    }
+    entry
+
+#!fsharp
+
+let table = website.Descendants ["tr"]
+
+#!markdown
+
+## Wrangling the data
+
+Now that we have the infrastructure for parsing the table on the website, we can start to look at the data.
+
+First, I'll make sure the number of rows I extracted matches what's shown on the website.
+
+#!fsharp
+
+// 390 taken from just looking at the website
+// We need to skip the first row because it just contains the header information
+table |> Seq.skip 1 |> Seq.map (parseRow 2024) |> Seq.length = 390
+
+#!markdown
+
+Now we save the data as a sequence (similar to a list, but lazy), filtering out any lifters who scored 0 points in the season.
+
+#!fsharp
+
+let data = table |> Seq.skip 1 |> Seq.map (parseRow 2024) |> Seq.filter (fun x -> x.MaximalePunktzahl <> 0.0)
+
+#!markdown
+
+... and separate out the different components to get it ready to plot.
+
+#!fsharp
+
+let ranks = data |> Seq.map (fun x -> x.Rank)
+let points = data |> Seq.map (fun x -> x.MaximalePunktzahl)
+let athlete = data |> Seq.map (fun x -> x.Name)
+
+#!markdown
+
+## Plotting the data
+
+For now, I'll just plot the athletes' maximum points by rank.
+
+With all of these plots, you can hover your mouse over a point to see more information about the data.
+
+#!fsharp
+
+let chart1 =
+    Chart.Line(x = ranks, y = points, MultiText = athlete, ShowMarkers = true)
+    |> Chart.withYAxisStyle(TitleText="Points scored")
+    |> Chart.withXAxisStyle(TitleText="Rank")
+    |> Chart.withTitle("All athletes")
+chart1
+
+#!markdown
+
+Here, I zoom in on my favorite club, AC Potsdam. We had a pretty great season, with most of our regular team members maxing well over 100 points!
+
+#!fsharp
+
+let acpotsdam =
+    data
+    |> Seq.filter (fun x -> x.Verein = "Athletik-Club Potsdam e.V.")
+    |> (fun x ->
+        let ranks = Seq.map (fun y -> y.Rank) x
+        let points = Seq.map (fun y -> y.MaximalePunktzahl) x
+        let athlete = Seq.map (fun y -> y.Name) x
+        Chart.Line(x=ranks, y=points, MultiText = athlete, ShowMarkers = true))
+    |> Chart.withTitle("AC Potsdam")
+    |> Chart.withXAxisStyle(TitleText="Rank")
+    |> Chart.withYAxisStyle(TitleText="Max. points")
+acpotsdam
+
+#!markdown
+
+Now, let's group the data by club so that we can visually compare them.
+
+In the plot below, you can click on a club in the legend to remove it from the plot. Double clicking removes all others.
+
+#!fsharp
+
+let data_by_club = data |> Seq.groupBy (fun x -> x.Verein) |> Seq.sortBy (fun (x, y) -> x)
+
+#!fsharp
+
+[for (club, dat) in data_by_club ->
+    let rank = Seq.map (fun x -> x.Rank) dat
+    let points = Seq.map (fun x -> x.MaximalePunktzahl) dat
+    let athlete = Seq.map (fun x -> x.Name) dat
+    Chart.Line(x=rank, y=points, MultiText = athlete, Name=club, ShowMarkers = true)]
+|> Chart.combine
+|> Chart.withSize(Width=1000)
+|> Chart.withTitle("Maximum points by club, 2024-2025")
+|> Chart.withXAxisStyle(TitleText="Rank")
+|> Chart.withYAxisStyle(TitleText="Max. points")
+
+#!markdown
+
+## Wrapping up
+
+Looking at the plots, we can see that most lifters in the *Bundesliga* fall in a roughly 100-point span, from 50 to 100 points. At the upper end, we have some of the best lifters in the world (e.g., Karlos Nasar, Solfrid Koanda). Eye-balling the data, it looks like the distribution of maximum points might be roughly normally distributed, but I suspect there's [something more interesting](https://en.wikipedia.org/wiki/Extreme_value_theory) going on.
+
+I'll leave any actual analysis to another time, as this was just meant as a fun exercise to learn about web scraping with F# and plotting with [Plotly.NET](https://plotly.net/).
+
+This notebook can be found on [my GitHub](https://github.com/smith-garrett/bundesliga-fsharp).
